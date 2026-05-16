@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>桃花源记 · 跳一跳</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; display: flex; justify-content: center; align-items: center; min-height: 100vh; font-family: 'Georgia', 'SimSun', serif; overflow: hidden; }
+    #gameCanvas { display: block; background: linear-gradient(180deg, #87CEEB 0%, #E0F7FA 40%, #A5D6A7 60%, #66BB6A 100%); cursor: pointer; }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const W = Math.min(480, window.innerWidth);
+const H = Math.min(800, window.innerHeight);
+canvas.width = W;
+canvas.height = H;
+
+const GROUND_Y = H * 0.85;
+const GRAVITY = 0.6;
+const JUMP_V = -12;
+
+let platforms = [];
+let player = {};
+let score = 0;
+let gameState = 'ready';
+let combo = 0;
+let particles = [];
+
+function randomColor() {
+  const colors = ['#FFD54F','#FF8A65','#81C784','#64B5F6','#CE93D8','#4DD0E1','#FFCC80','#A5D6A7','#EF9A9A','#90CAF9'];
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function createPlatform(x, y, w, h) {
+  return { x, y, w, h, color: randomColor(), hasBox: Math.random() > 0.6 };
+}
+
+function init() {
+  platforms = [
+    createPlatform(W/2 - 60, GROUND_Y - 20, 120, 24),
+    createPlatform(W/2 + 80, GROUND_Y - 100, 90, 20),
+  ];
+  player = { x: W/2, y: GROUND_Y - 60, w: 28, h: 36, vy: 0, onGround: true, jumpCharge: 0 };
+  score = 0;
+  combo = 0;
+  particles = [];
+  gameState = 'ready';
+}
+
+function spawnParticle(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 4;
+    particles.push({
+      x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 1,
+      life: 1, decay: 0.015 + Math.random() * 0.02, color, size: 3 + Math.random() * 4,
+    });
+  }
+}
+
+function addPlatform() {
+  const last = platforms[platforms.length - 1];
+  const dir = Math.random() > 0.5 ? 1 : -1;
+  const dx = (40 + Math.random() * 80) * dir;
+  const dy = -(50 + Math.random() * 80);
+  let nx = last.x + dx;
+  let ny = last.y + dy;
+  nx = Math.max(20, Math.min(W - 110, nx));
+  ny = Math.max(60, ny);
+  const nw = 70 + Math.random() * 60;
+  platforms.push(createPlatform(nx, ny, nw, 20));
+}
+
+function getLandingX(platform, px) {
+  return Math.max(platform.x + 5, Math.min(platform.x + platform.w - 5, px));
+}
+
+function jump(power) {
+  if (!player.onGround) return;
+  player.vy = JUMP_V * Math.max(0.6, Math.min(1.4, power));
+  player.onGround = false;
+  combo = 0;
+}
+
+const CHAR_COLORS = ['#FF7043','#FF8A65','#FFAB91'];
+
+function drawPlayer() {
+  const p = player;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+
+  // Body
+  const grad = ctx.createLinearGradient(0, -p.h, 0, 0);
+  grad.addColorStop(0, CHAR_COLORS[0]);
+  grad.addColorStop(1, CHAR_COLORS[1]);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(-p.w/2, -p.h, p.w, p.h, 6);
+  ctx.fill();
+
+  // Head
+  ctx.fillStyle = '#FFE0B2';
+  ctx.beginPath();
+  ctx.arc(0, -p.h - 2, p.w/2 - 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.arc(-6, -p.h - 4, 3, 0, Math.PI * 2);
+  ctx.arc(6, -p.h - 4, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hat
+  ctx.fillStyle = '#D32F2F';
+  ctx.beginPath();
+  ctx.ellipse(0, -p.h - 10, 14, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(-6, -p.h - 18, 12, 10);
+
+  ctx.restore();
+}
+
+function drawPlatform(pl) {
+  ctx.save();
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.1)';
+  ctx.beginPath();
+  ctx.roundRect(pl.x + 3, pl.y + 4, pl.w, pl.h, 8);
+  ctx.fill();
+
+  // Box
+  const grad = ctx.createLinearGradient(pl.x, pl.y, pl.x, pl.y + pl.h);
+  grad.addColorStop(0, pl.color);
+  grad.addColorStop(1, pl.color + '99');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(pl.x, pl.y, pl.w, pl.h, 8);
+  ctx.fill();
+
+  // Border
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(pl.x, pl.y, pl.w, pl.h, 8);
+  ctx.stroke();
+
+  // Decorative box on platform
+  if (pl.hasBox) {
+    ctx.fillStyle = '#8D6E63';
+    ctx.beginPath();
+    ctx.roundRect(pl.x + pl.w/2 - 8, pl.y - 12, 16, 12, 3);
+    ctx.fill();
+    ctx.fillStyle = '#A1887F';
+    ctx.fillRect(pl.x + pl.w/2 - 6, pl.y - 10, 12, 8);
+  }
+  ctx.restore();
+}
+
+function update() {
+  const p = player;
+  p.vy += GRAVITY;
+  p.y += p.vy;
+
+  if (gameState === 'playing') {
+    // Charge jump on ground
+    if (p.onGround) {
+      p.jumpCharge = Math.min(1, p.jumpCharge + 0.02);
+    }
+  }
+
+  // Platform collision
+  p.onGround = false;
+  for (const pl of platforms) {
+    if (p.vy > 0 &&
+        p.x > pl.x && p.x < pl.x + pl.w &&
+        p.y - p.h/2 < pl.y + 5 && p.y - p.h/2 > pl.y - 15) {
+      p.y = pl.y - p.h/2;
+      p.vy = 0;
+      p.onGround = true;
+      p.jumpCharge = 0;
+      break;
+    }
+  }
+
+  // Off screen
+  if (p.y > H + 50) {
+    gameState = 'over';
+    spawnParticle(p.x, p.y, '#FF5252', 30);
+  }
+
+  // Particles
+  for (const pt of particles) {
+    pt.x += pt.vx;
+    pt.y += pt.vy;
+    pt.vy += 0.05;
+    pt.life -= pt.decay;
+  }
+  particles = particles.filter(pt => pt.life > 0);
+
+  // Scroll & add platforms
+  if (p.y < H * 0.4 && p.vy < 0) {
+    const dy = H * 0.4 - p.y;
+    p.y = H * 0.4;
+    for (const pl of platforms) pl.y += dy;
+  }
+
+  while (platforms[platforms.length - 1].y > 30) {
+    addPlatform();
+  }
+  platforms = platforms.filter(pl => pl.y < H + 50);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#1a237e');
+  bgGrad.addColorStop(0.3, '#283593');
+  bgGrad.addColorStop(0.6, '#5C6BC0');
+  bgGrad.addColorStop(1, '#7986CB');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  for (let i = 0; i < 30; i++) {
+    const sx = (i * 137 + 50) % W;
+    const sy = (i * 97 + 20) % (H * 0.5);
+    const sr = 1 + (i % 2);
+    ctx.beginPath();
+    ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Moon
+  ctx.fillStyle = '#FFE082';
+  ctx.shadowColor = '#FFD54F';
+  ctx.shadowBlur = 30;
+  ctx.beginPath();
+  ctx.arc(W - 60, 50, 30, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Platforms
+  for (const pl of platforms) drawPlatform(pl);
+
+  // Particles
+  for (const pt of particles) {
+    ctx.globalAlpha = pt.life;
+    ctx.fillStyle = pt.color;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, pt.size * pt.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Player
+  drawPlayer();
+
+  // Charge indicator
+  if (player.onGround && gameState === 'playing' && player.jumpCharge > 0.1) {
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y + 20, 10 + player.jumpCharge * 15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#FFD54F';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y + 20, 10 + player.jumpCharge * 15, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Score
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.font = 'bold 28px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`🏮 ${score}`, W/2, 50);
+
+  // HUD
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = '14px Georgia, serif';
+  ctx.fillText('桃花源记 · 跳一跳', W/2, 80);
+
+  // States
+  if (gameState === 'ready') {
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#FFE082';
+    ctx.font = 'bold 36px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🏯 桃花源记', W/2, H/2 - 40);
+    ctx.fillStyle = '#FFF';
+    ctx.font = '18px Georgia, serif';
+    ctx.fillText('按住蓄力 · 松开跳跃', W/2, H/2 + 20);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '14px Georgia, serif';
+    ctx.fillText('点击开始', W/2, H/2 + 60);
+  }
+
+  if (gameState === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#FF8A80';
+    ctx.font = 'bold 40px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🌸 归去', W/2, H/2 - 40);
+    ctx.fillStyle = '#FFF';
+    ctx.font = '24px Georgia, serif';
+    ctx.fillText(`得分: ${score}`, W/2, H/2 + 20);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '16px Georgia, serif';
+    ctx.fillText('「不足为外人道也」', W/2, H/2 + 60);
+    ctx.fillText('点击重新开始', W/2, H/2 + 100);
+  }
+}
+
+function gameLoop() {
+  if (gameState === 'playing') update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+// Input
+let touchStartY = 0;
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  if (gameState === 'ready' || gameState === 'over') {
+    if (gameState === 'over') init();
+    gameState = 'playing';
+    return;
+  }
+  if (player.onGround) {
+    touchStartY = touch.clientY;
+  }
+});
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (gameState === 'playing' && player.onGround && touchStartY > 0) {
+    const power = Math.min(1.4, player.jumpCharge);
+    jump(power);
+    const targetPlatform = platforms.find(pl => pl !== platforms[0] && pl.y < player.y);
+    if (targetPlatform) {
+      const dx = targetPlatform.x + targetPlatform.w/2 - player.x;
+      const dist = Math.abs(dx);
+      if (dist < 60) {
+        combo++;
+        const bonus = Math.floor(combo / 3) + 1;
+        score += bonus;
+        spawnParticle(player.x, player.y, '#FFD54F', 8);
+      } else {
+        score += 1;
+        combo = 0;
+      }
+    }
+    touchStartY = 0;
+    player.jumpCharge = 0;
+  }
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (gameState === 'ready' || gameState === 'over') {
+    if (gameState === 'over') init();
+    gameState = 'playing';
+    return;
+  }
+  if (player.onGround) {
+    touchStartY = e.clientY;
+  }
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  if (gameState === 'playing' && player.onGround && touchStartY > 0) {
+    const power = Math.min(1.4, player.jumpCharge);
+    jump(power);
+    const targetPlatform = platforms[1];
+    if (targetPlatform) {
+      const dx = targetPlatform.x + targetPlatform.w/2 - player.x;
+      const dist = Math.abs(dx);
+      if (dist < 60) {
+        combo++;
+        const bonus = Math.floor(combo / 3) + 1;
+        score += bonus;
+        spawnParticle(player.x, player.y, '#FFD54F', 8);
+      } else {
+        score += 1;
+        combo = 0;
+      }
+    }
+    touchStartY = 0;
+    player.jumpCharge = 0;
+  }
+});
+
+// roundRect polyfill
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+    if (r > w/2) r = w/2;
+    if (r > h/2) r = h/2;
+    this.moveTo(x + r, y);
+    this.lineTo(x + w - r, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + r);
+    this.lineTo(x + w, y + h - r);
+    this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    this.lineTo(x + r, y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - r);
+    this.lineTo(x, y + r);
+    this.quadraticCurveTo(x, y, x + r, y);
+    return this;
+  };
+}
+
+init();
+gameLoop();
+</script>
+</body>
+</html>
